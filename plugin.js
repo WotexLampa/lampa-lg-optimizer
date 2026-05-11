@@ -2,22 +2,6 @@
  * ============================================================
  *  LG OPTIMIZER v1.4.0 — Performance Plugin for Lampa
  * ============================================================
- *
- *  Модули:
- *   1  — GPU-слой для карточек (CSS)
- *   2  — keydown RAF throttle          ┐
- *   9  — scroll RAF throttle           ├─ единый патч addEventListener
- *   14 — passive touch/wheel           ┘
- *   3  — localStorage write-buffer (3 уровня приоритета)
- *   4  — fetch deduplicator + timeout + URL guard
- *   5  — image lazy loader (IntersectionObserver)
- *   6  — video timeupdate throttle
- *   7  — JSON / null-response guard (Lampa.Reguest)
- *   8  — EventBus leak monitor (Lampa.Listener)
- *   10 — DNS prefetch + preconnect
- *   11 — Lampa.Template cloneNode кэш
- *   12 — Lampa.Listener 'search' debounce
- *   13 — Fast-nav: отключение CSS transitions при быстрой навигации
  */
 
 (function () {
@@ -29,17 +13,16 @@
     var VERSION       = '1.4.0';
     var COMPONENT_ID  = 'lg_optimizer';
 
-    // Настраиваемые константы — все в одном месте.
-    var LS_DEBOUNCE      = 400;   // мс: дебаунс «нормального» localStorage
-    var LS_FAST          = 150;   // мс: дебаунс «быстрого» localStorage (UI-ключи)
-    var LS_SLOW          = 2000;  // мс: дебаунс «медленного» localStorage
-    var PLAYER_MS        = 250;   // мс: интервал throttle для timeupdate
+    var LS_DEBOUNCE      = 400;
+    var LS_FAST          = 150;
+    var LS_SLOW          = 2000;
+    var PLAYER_MS        = 250;
     var IMG_MARGIN       = '400px';
-    var FETCH_TIMEOUT    = 15000; // мс
-    var SEARCH_DEBOUNCE  = 300;   // мс: дебаунс поиска
-    var FASTNAV_GAP      = 150;   // мс: порог «быстрого» нажатия пульта
-    var FASTNAV_RESTORE  = 200;   // мс: восстановление transitions после навигации
-    var TEMPLATE_MAX     = 40;    // макс. записей в кэше шаблонов
+    var FETCH_TIMEOUT    = 15000;
+    var FILTER_DEBOUNCE  = 300;   // ← переименовано: SEARCH → FILTER
+    var FASTNAV_GAP      = 150;
+    var FASTNAV_RESTORE  = 200;
+    var TEMPLATE_MAX     = 40;
 
     var KEYS = {
         css:      'lg_opt_css',
@@ -54,7 +37,7 @@
         passive:  'lg_opt_passive',
         dns:      'lg_opt_dns',
         template: 'lg_opt_template',
-        search:   'lg_opt_search',
+        filter:   'lg_opt_filter',    // ← переименовано: search → filter
         fastnav:  'lg_opt_fastnav'
     };
 
@@ -115,8 +98,7 @@
         return key;
     }
 
-    // ── МОДУЛЬ 1: GPU-СЛОЙ ДЛЯ КАРТОЧЕК ────────────────────
-    // webOS 3+ (Chromium 49+, transform/backface-visibility)
+    // ── МОДУЛЬ 1: GPU-СЛОЙ [webOS 3+] ──────────────────────
     function patchCSS() {
         if (!readNativeBool(KEYS.css, true)) {
             log('CSS GPU-hints: disabled by user');
@@ -124,7 +106,6 @@
         }
         try {
             if (document.getElementById('lg-opt-css')) return;
-
             var style = document.createElement('style');
             style.id  = 'lg-opt-css';
             style.textContent = [
@@ -138,7 +119,6 @@
                 '}',
                 '.card__img{overflow:hidden;}'
             ].join('\n');
-
             (document.head || document.documentElement).appendChild(style);
             log('CSS GPU-hints applied');
         } catch (e) {
@@ -146,20 +126,7 @@
         }
     }
 
-    // ── МОДУЛИ 2 + 9 + 14: ЕДИНЫЙ ПАТЧ addEventListener ────
-    //
-    // Модуль 2  — keydown RAF throttle (только document):
-    //   Пульт LG шлёт ~30 keydown/сек при удержании. RAF = max 1 вызов/кадр.
-    //
-    // Модуль 9  — scroll RAF throttle (все элементы):
-    //   scroll стреляет каждые 4–8 мс → getBoundingClientRect на всех
-    //   карточках (~1.8 мс). RAF ограничивает до 60 вызовов/сек.
-    //
-    // Модуль 14 — passive listeners (touchstart/touchmove/wheel):
-    //   Без {passive:true} браузер блокирует рендер-поток ~50 мс на каждое
-    //   касание. Применяем только когда вызывающий код не запретил явно.
-    //
-    // webOS 3+ (Chromium 49+); WeakMap — webOS 4+ (Chromium 36+)
+    // ── МОДУЛИ 2 + 9 + 14: ЕДИНЫЙ addEventListener [webOS 3+] ─
     function patchEventListeners() {
         var doKeydown = readNativeBool(KEYS.keydown, true);
         var doScroll  = readNativeBool(KEYS.scroll,  true);
@@ -190,7 +157,6 @@
                     return _ael.call(this, type, fn, opts);
                 }
 
-                // Модуль 14: passive
                 if (doPassive && PASSIVE_SAFE[type]) {
                     if (opts === undefined || opts === null) {
                         opts = { passive: true };
@@ -202,7 +168,6 @@
                     }
                 }
 
-                // Модуль 2: keydown RAF (только document)
                 if (doKeydown && type === 'keydown' &&
                     this === document && !fn.__lgRaf) {
                     var keyWrapped = function (e) {
@@ -221,7 +186,6 @@
                     return _ael.call(this, 'keydown', keyWrapped, opts);
                 }
 
-                // Модуль 9: scroll RAF
                 if (doScroll && type === 'scroll' && !fn.__lgScrollRaf) {
                     var target = this;
                     var scrollWrapped = function (e) {
@@ -260,24 +224,13 @@
             if (doKeydown) active.push('keydown-RAF');
             if (doScroll)  active.push('scroll-RAF');
             if (doPassive) active.push('passive-touch/wheel');
-            log('EventListeners patch applied: ' + active.join(', '));
+            log('EventListeners patch: ' + active.join(', '));
         } catch (e) {
             log('EventListeners error: ' + e.message);
         }
     }
 
-    // ── МОДУЛЬ 3: localStorage WRITE BUFFER (3 уровня) ──────
-    //
-    // IMMEDIATE — lg_opt_*, player_current_time, account, lang, token:
-    //   пишем сразу — данные авторизации и прогресс плеера не теряются
-    //   при крашах/зависаниях webOS.
-    //
-    // FAST (150 мс) — ключи интерфейса, ощутимые пользователем мгновенно:
-    //   card_view_type, card_quality, interface_lang.
-    //
-    // NORMAL (400 мс) — все остальные ключи (дефолт).
-    //
-    // webOS 3+
+    // ── МОДУЛЬ 3: localStorage 3-LEVEL BUFFER [webOS 3+] ────
     function patchLocalStorage() {
         if (!isEnabled(KEYS.storage)) {
             log('localStorage buffer: disabled by user');
@@ -296,13 +249,11 @@
 
                 var _set = LS.set.bind(LS);
 
-                // Три независимых буфера и таймера.
                 var bufFast   = Object.create(null);
                 var bufNormal = Object.create(null);
                 var timerFast   = null;
                 var timerNormal = null;
 
-                // O(1): критичные ключи — мгновенная запись.
                 var IMMEDIATE = {
                     player_current_time: 1,
                     account:             1,
@@ -310,7 +261,6 @@
                     token:               1
                 };
 
-                // O(1): «быстрые» UI-ключи — запись через 150 мс.
                 var FAST_UI = {
                     card_view_type:   1,
                     card_quality:     1,
@@ -321,7 +271,6 @@
 
                 function isImmediate(name) {
                     if (IMMEDIATE[name]) return true;
-                    // Все настройки плагина — всегда немедленно.
                     if (String(name).indexOf('lg_opt_') === 0) return true;
                     return false;
                 }
@@ -387,8 +336,7 @@
         setTimeout(tryPatch, 600);
     }
 
-    // ── МОДУЛЬ 4: fetch DEDUPLICATOR + TIMEOUT + URL GUARD ──
-    // webOS 5+ (AbortController — Chromium 66+, webOS 5+)
+    // ── МОДУЛЬ 4: fetch DEDUP + TIMEOUT + URL GUARD [webOS 5+] ─
     function patchFetch() {
         if (!readNativeBool(KEYS.fetch, true)) {
             log('Fetch dedup: disabled by user');
@@ -452,8 +400,7 @@
         }
     }
 
-    // ── МОДУЛЬ 5: IMAGE LAZY LOADER ─────────────────────────
-    // webOS 5+ (IntersectionObserver — Chromium 58+, webOS 5+)
+    // ── МОДУЛЬ 5: IMAGE LAZY LOADER [webOS 5+] ──────────────
     function patchImages() {
         if (!isEnabled(KEYS.images)) {
             log('Lazy images: disabled by user');
@@ -515,8 +462,7 @@
         }
     }
 
-    // ── МОДУЛЬ 6: VIDEO timeupdate THROTTLE ─────────────────
-    // webOS 3+
+    // ── МОДУЛЬ 6: VIDEO timeupdate THROTTLE [webOS 3+] ──────
     function patchPlayer() {
         if (!isEnabled(KEYS.player)) {
             log('Player throttle: disabled by user');
@@ -583,8 +529,7 @@
         }
     }
 
-    // ── МОДУЛЬ 7: JSON GUARD ────────────────────────────────
-    // webOS 3+
+    // ── МОДУЛЬ 7: JSON GUARD [webOS 3+] ─────────────────────
     function patchRequestGuard() {
         if (!isEnabled(KEYS.json)) {
             log('JSON guard: disabled by user');
@@ -626,8 +571,7 @@
         setTimeout(tryPatch, 500);
     }
 
-    // ── МОДУЛЬ 8: EventBus LEAK MONITOR ─────────────────────
-    // webOS 3+
+    // ── МОДУЛЬ 8: EventBus LEAK MONITOR [webOS 3+] ──────────
     function patchEventBus() {
         if (!isEnabled(KEYS.eventbus)) {
             log('EventBus monitor: disabled by user');
@@ -675,22 +619,13 @@
         setTimeout(tryPatch, 600);
     }
 
-    // ── МОДУЛЬ 10: DNS PREFETCH + PRECONNECT ────────────────
-    //
-    // Браузер резолвит DNS и устанавливает TCP+TLS параллельно с
-    // отрисовкой UI. К моменту первого запроса соединение уже готово.
-    //
-    // dns-prefetch  — webOS 3+ (Chromium 49+)
-    // preconnect    — webOS 4+ (Chromium 46+, широкая поддержка с 58+)
+    // ── МОДУЛЬ 10: DNS PREFETCH + PRECONNECT [webOS 3+] ─────
     function patchDNS() {
         if (!readNativeBool(KEYS.dns, true)) {
             log('DNS prefetch: disabled by user');
             return;
         }
         try {
-            // Домены взяты из исходного кода Lampa: api-запросы TMDB,
-            // Kinopoisk, CORS-прокси. Список намеренно минимален —
-            // только домены, которые Lampa использует в каждой сессии.
             var DOMAINS = [
                 'api.themoviedb.org',
                 'image.tmdb.org',
@@ -700,23 +635,16 @@
             ];
 
             var head = document.head || document.documentElement;
-
-            // DocumentFragment: одна операция вставки вместо N.
             var frag = document.createDocumentFragment();
 
             for (var i = 0; i < DOMAINS.length; i++) {
                 var domain = DOMAINS[i];
 
-                // dns-prefetch: резолвинг DNS без установки соединения.
-                // Безопасно для всех версий, не занимает TCP-слот.
                 var dns = document.createElement('link');
                 dns.rel  = 'dns-prefetch';
                 dns.href = '//' + domain;
                 frag.appendChild(dns);
 
-                // preconnect: DNS + TCP + TLS заранее.
-                // crossOrigin='anonymous' — стандарт для API-доменов;
-                // сообщает браузеру, что запрос пойдёт без credentials.
                 var pre = document.createElement('link');
                 pre.rel         = 'preconnect';
                 pre.href        = 'https://' + domain;
@@ -732,21 +660,9 @@
         }
     }
 
-    // ── МОДУЛЬ 11: Lampa.Template CLONENODE КЭШ ─────────────
-    //
-    // Lampa.Template.get(name) каждый раз создаёт div, парсит
-    // innerHTML (синхронно в main thread) и возвращает children[0].
-    // Мы кэшируем первый результат и при повторных вызовах отдаём
-    // cloneNode(true) — это нативная C++ операция, в 15–20 раз быстрее
-    // HTML-парсинга.
-    //
-    // LRU по размеру TEMPLATE_MAX (40 записей): шаблонов в Lampa ~15–20,
-    // запас на плагины. При превышении удаляем самый старый.
-    // Память: 40 × ~3 KB = 120 KB — безопасно для любого webOS TV.
-    //
-    // webOS 3+ (cloneNode — стандарт W3C DOM Level 2)
+    // ── МОДУЛЬ 11: Lampa.Template CLONENODE КЭШ [webOS 3+] ──
     function patchTemplate() {
-        if (!readNativeBool(KEYS.template, true)) {
+        if (!isEnabled(KEYS.template)) {  // ← ИСПРАВЛЕНО
             log('Template cache: disabled by user');
             return;
         }
@@ -755,9 +671,6 @@
         function tryPatch() {
             try {
                 var T = safeGet('Lampa.Template');
-                // get обязателен; add проверяем отдельно — он нужен для
-                // определения момента инвалидации кэша при динамическом
-                // добавлении шаблонов (плагины вызывают Template.add).
                 if (!T || typeof T.get !== 'function') {
                     if (++attempts < 25) setTimeout(tryPatch, 400);
                     return;
@@ -767,17 +680,12 @@
 
                 var _get = T.get.bind(T);
 
-                // Простой LRU через массив ключей + Object словарь.
-                // Object.create(null) — нет прото-свойств, нет коллизий.
                 var cache    = Object.create(null);
-                var lruOrder = []; // хранит порядок вставки (FIFO eviction)
+                var lruOrder = [];
 
-                // Если плагин вызывает Template.add — инвалидируем кэш
-                // для этого имени, чтобы новый шаблон был подхвачен.
                 if (typeof T.add === 'function') {
                     var _add = T.add.bind(T);
                     T.add = function (name, html) {
-                        // Удаляем из кэша — следующий get() переразберёт.
                         if (cache[name]) {
                             delete cache[name];
                             var idx = lruOrder.indexOf(name);
@@ -789,25 +697,16 @@
 
                 T.get = function (name) {
                     if (cache[name]) {
-                        // cloneNode(true) — глубокая копия: атрибуты,
-                        // классы, data-атрибуты, вложенные узлы.
                         return cache[name].cloneNode(true);
                     }
 
                     var result = _get(name);
 
-                    // Кэшируем только настоящие DOM Element-узлы.
-                    // Если Lampa вернул null/undefined — не кэшируем,
-                    // чтобы не зафиксировать ошибку навсегда.
                     if (result && result.nodeType === 1) {
-                        // LRU eviction: если достигли лимита — удаляем
-                        // самую старую запись (первый элемент массива).
                         if (lruOrder.length >= TEMPLATE_MAX) {
                             var oldest = lruOrder.shift();
                             delete cache[oldest];
                         }
-                        // Сохраняем эталонную копию (не сам result —
-                        // он будет модифицирован Lampa далее по коду).
                         cache[name]    = result.cloneNode(true);
                         lruOrder.push(name);
                     }
@@ -823,28 +722,10 @@
         setTimeout(tryPatch, 400);
     }
 
-    // ── МОДУЛЬ 12: SEARCH DEBOUNCE ──────────────────────────
-    //
-    // Lampa использует виртуальную клавиатуру (simple-keyboard).
-    // Каждое нажатие буквы транслируется в событие Lampa.Listener
-    // типа 'search', которое немедленно триггерит полный пересчёт
-    // результатов поиска (HTTP-запрос + рендер карточек).
-    //
-    // При вводе «Интерстеллар» (13 букв) без дебаунса:
-    //   13 HTTP-запросов × ~600 мс каждый = очередь запросов, race-condition,
-    //   13 × рендер карточек × 50 мс = 650 мс блокировки main thread.
-    //
-    // С дебаунсом 300 мс: ровно 1 запрос после паузы.
-    //
-    // Техника: патч Lampa.Listener.send — единственный способ перехватить
-    // события виртуальной клавиатуры без вмешательства в её DOM-логику.
-    // Дебаунс применяется ТОЛЬКО к событию 'search'; все остальные события
-    // проходят без изменений (строгая проверка типа).
-    //
-    // webOS 3+
-    function patchSearch() {
-        if (!readNativeBool(KEYS.search, true)) {
-            log('Search debounce: disabled by user');
+    // ── МОДУЛЬ 12: FILTER DEBOUNCE [webOS 3+] ───────────────
+    function patchFilter() {
+        if (!isEnabled(KEYS.filter)) {  // ← ИСПРАВЛЕНО
+            log('Filter debounce: disabled by user');
             return;
         }
 
@@ -852,63 +733,39 @@
         function tryPatch() {
             try {
                 var L = safeGet('Lampa.Listener');
-                // send — метод публикации событий в шину Lampa.
                 if (!L || typeof L.send !== 'function') {
                     if (++attempts < 25) setTimeout(tryPatch, 600);
                     return;
                 }
-                if (L.__lgSearchDebounce) return;
-                L.__lgSearchDebounce = true;
+                if (L.__lgFilterDebounce) return;
+                L.__lgFilterDebounce = true;
 
                 var _send  = L.send.bind(L);
                 var timer  = null;
-                var lastEv = null; // последний аргумент события search
+                var lastEv = null;
 
                 L.send = function (name, data) {
-                    // Перехватываем ТОЛЬКО 'search' — никакие другие
-                    // события не задерживаются.
-                    if (name !== 'search') return _send(name, data);
+                    // ← ИСПРАВЛЕНО: 'filter' вместо 'search'
+                    if (name !== 'filter') return _send(name, data);
 
                     lastEv = data;
                     clearTimeout(timer);
                     timer = setTimeout(function () {
                         timer = null;
-                        // Вызываем оригинальный send с последним
-                        // накопленным значением строки поиска.
-                        try { _send('search', lastEv); } catch (e) {}
+                        try { _send('filter', lastEv); } catch (e) {}
                         lastEv = null;
-                    }, SEARCH_DEBOUNCE);
+                    }, FILTER_DEBOUNCE);
                 };
 
-                log('Search debounce applied (' + SEARCH_DEBOUNCE + 'ms)');
+                log('Filter debounce applied (' + FILTER_DEBOUNCE + 'ms)');
             } catch (e) {
-                log('Search debounce error: ' + e.message);
+                log('Filter debounce error: ' + e.message);
             }
         }
         setTimeout(tryPatch, 600);
     }
 
-    // ── МОДУЛЬ 13: FAST-NAV CSS TRANSITION KILL ─────────────
-    //
-    // При зажатии кнопки пульт шлёт ~30 keydown/сек.
-    // Каждый переход фокуса запускает CSS transition (transform scale,
-    // opacity и др.) длительностью 150–250 мс.
-    // Браузер пытается интерполировать N незавершённых transitions
-    // одновременно → CPU spike → потеря кадров → визуальное заикание.
-    //
-    // Алгоритм:
-    //   Два последовательных keydown с интервалом < FASTNAV_GAP мс
-    //   → быстрая навигация → добавляем класс body.lg-fast-nav
-    //   → CSS rule обнуляет все transition-duration / animation-duration.
-    //   Через FASTNAV_RESTORE мс после ПОСЛЕДНЕГО keydown — убираем класс.
-    //   При одиночных кликах (интервал > GAP) класс никогда не ставится
-    //   → анимации работают как обычно (одиночный клик = красиво).
-    //
-    // Слушатель в capture-фазе (третий аргумент = true):
-    //   срабатывает до любых других обработчиков, включая RAF-обёртки
-    //   модуля 2, что гарантирует точность измерения интервалов.
-    //
-    // webOS 3+ (classList — Chromium 8+)
+    // ── МОДУЛЬ 13: FAST-NAV CSS TRANSITION KILL [webOS 3+] ──
     function patchFastNav() {
         if (!readNativeBool(KEYS.fastnav, true)) {
             log('Fast nav: disabled by user');
@@ -917,10 +774,6 @@
         try {
             if (document.getElementById('lg-fastnav-css')) return;
 
-            // Инжектируем CSS-правило одной строкой.
-            // !important перекрывает любые inline-стили и специфичные
-            // правила — единственный надёжный способ обнуления transitions
-            // в стороннем приложении без доступа к его стилям.
             var style = document.createElement('style');
             style.id  = 'lg-fastnav-css';
             style.textContent =
@@ -937,21 +790,17 @@
                 var now = Date.now();
 
                 if (now - lastKey < FASTNAV_GAP) {
-                    // Два нажатия подряд → быстрая навигация.
-                    // classList.add идемпотентен: повторные вызовы
-                    // не создают дубликатов и не стоят ничего.
                     document.body.classList.add('lg-fast-nav');
                 }
 
                 lastKey = now;
 
-                // Сдвигаем таймер восстановления на каждом нажатии.
                 clearTimeout(timer);
                 timer = setTimeout(function () {
                     document.body.classList.remove('lg-fast-nav');
                 }, FASTNAV_RESTORE);
 
-            }, true); // capture = true
+            }, true);
 
             log('Fast nav transitions applied ' +
                 '(gap ' + FASTNAV_GAP + 'ms, restore ' +
@@ -1008,8 +857,6 @@
                         en: 'LG Optimizer v'   + VERSION,
                         uk: 'LG Оптимізатор v' + VERSION
                     },
-
-                    // ── Существующие модули ──────────────────────────
 
                     lg_opt_css_name: {
                         ru: 'GPU-ускорение карточек',
@@ -1121,8 +968,6 @@
                         uk: 'Додає {passive:true} до обробників дотиків. Прибирає 50 мс затримки. [webOS 3+]'
                     },
 
-                    // ── Новые модули ─────────────────────────────────
-
                     lg_opt_dns_name: {
                         ru: 'DNS prefetch и preconnect',
                         en: 'DNS prefetch & preconnect',
@@ -1145,15 +990,15 @@
                         uk: 'Кешує розібрані HTML-шаблони. Каталог із 500 карток рендериться у 20 разів швидше. [webOS 3+]'
                     },
 
-                    lg_opt_search_name: {
-                        ru: 'Дебаунс поиска',
-                        en: 'Search debounce',
-                        uk: 'Дебаунс пошуку'
+                    lg_opt_filter_name: {  // ← переименовано
+                        ru: 'Дебаунс фильтрации',
+                        en: 'Filter debounce',
+                        uk: 'Дебаунс фільтрації'
                     },
-                    lg_opt_search_desc: {
-                        ru: 'Откладывает отправку поискового запроса на 300 мс после последнего нажатия. Вместо 13 запросов на слово — всего 1. [webOS 3+]',
-                        en: 'Delays the search query by 300 ms after the last keypress. One request per word instead of 13. [webOS 3+]',
-                        uk: 'Затримує відправку пошукового запиту на 300 мс. Замість 13 запитів на слово — лише 1. [webOS 3+]'
+                    lg_opt_filter_desc: {  // ← переименовано
+                        ru: 'Откладывает применение фильтра на 300 мс после последнего изменения. Вместо 13 пересчётов на слово — всего 1. [webOS 3+]',
+                        en: 'Delays filter application by 300 ms after the last change. One recalculation per word instead of 13. [webOS 3+]',
+                        uk: 'Затримує застосування фільтра на 300 мс. Замість 13 перерахунків на слово — лише 1. [webOS 3+]'
                     },
 
                     lg_opt_fastnav_name: {
@@ -1164,7 +1009,7 @@
                     lg_opt_fastnav_desc: {
                         ru: 'Отключает CSS-анимации при быстром удержании кнопок пульта. Фокус перемещается мгновенно, плавность 60 FPS вместо 20 FPS. При одиночных кликах анимации работают как обычно. [webOS 3+]',
                         en: 'Disables CSS animations while holding remote buttons. Focus moves instantly, 60 FPS instead of 20 FPS. Single clicks keep their animations. [webOS 3+]',
-                        uk: 'Вимикає CSS-анімації при утриманні кнопок пульта. Фокус переміщається миттєво, 60 FPS замість 20 FPS. [webOS 3+]'
+                        uk: 'Вимикає CSS-анімації при утриманні кнопок пульта. Фокус переміщується миттєво, 60 FPS замість 20 FPS. [webOS 3+]'
                     },
 
                     lg_opt_restart_warn: {
@@ -1182,7 +1027,6 @@
             });
 
             var params = [
-                // ── Существующие модули ──────────────────────────────
                 buildParam(KEYS.css,      'lg_opt_css_name',      'lg_opt_css_desc',      true),
                 buildParam(KEYS.keydown,  'lg_opt_keydown_name',  'lg_opt_keydown_desc',  true),
                 buildParam(KEYS.scroll,   'lg_opt_scroll_name',   'lg_opt_scroll_desc',   true),
@@ -1193,10 +1037,9 @@
                 buildParam(KEYS.player,   'lg_opt_player_name',   'lg_opt_player_desc',   true),
                 buildParam(KEYS.json,     'lg_opt_json_name',     'lg_opt_json_desc',     true),
                 buildParam(KEYS.eventbus, 'lg_opt_eventbus_name', 'lg_opt_eventbus_desc', true),
-                // ── Новые модули ─────────────────────────────────────
                 buildParam(KEYS.dns,      'lg_opt_dns_name',      'lg_opt_dns_desc',      true),
                 buildParam(KEYS.template, 'lg_opt_template_name', 'lg_opt_template_desc', true),
-                buildParam(KEYS.search,   'lg_opt_search_name',   'lg_opt_search_desc',   true),
+                buildParam(KEYS.filter,   'lg_opt_filter_name',   'lg_opt_filter_desc',   true),  // ← исправлено
                 buildParam(KEYS.fastnav,  'lg_opt_fastnav_name',  'lg_opt_fastnav_desc',  true)
             ];
 
@@ -1238,14 +1081,13 @@
     // ── ТОЧКА ВХОДА ──────────────────────────────────────────
     function init() {
         try {
-            // Синхронные патчи — не зависят от DOM и Lampa API:
+            // КРИТИЧНО: порядок вызовов имеет значение!
             patchCSS();
+            patchFastNav();        // ← ИСПРАВЛЕНО: ДО patchEventListeners
             patchEventListeners();
             patchFetch();
             patchDNS();
-            patchFastNav();
 
-            // DOM-зависимые модули — нужен body/documentElement:
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', function () {
                     patchImages();
@@ -1256,12 +1098,11 @@
                 patchPlayer();
             }
 
-            // Асинхронные патчи — ждут инициализации Lampa API:
             patchLocalStorage();
             patchRequestGuard();
             patchEventBus();
-            patchTemplate();
-            patchSearch();
+            patchTemplate();       // ← теперь использует isEnabled()
+            patchFilter();         // ← переименовано, использует isEnabled()
             registerPlugin();
 
             log('LG Optimizer ' + VERSION + ' — all modules started');
