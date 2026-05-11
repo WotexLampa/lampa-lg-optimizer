@@ -37,4 +37,4 @@ https://raw.githack.com/WotexLampa/lampa-lg-optimizer/main/plugin.js
 
 ## Лицензия
 
-Проект распространяется по лицензии[MIT](https://opensource.org/licenses/MIT). Вы можете свободно использовать, модифицировать и распространять данный код.
+Проект распространяется по лицензии [MIT](https://opensource.org/licenses/MIT). Вы можете свободно использовать, модифицировать и распространять данный код.
