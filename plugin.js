@@ -1,28 +1,26 @@
 /**
  * ============================================================
- *  LG OPTIMIZER v1.4.0 — Performance Plugin for Lampa
+ *  LG OPTIMIZER v1.4.1 — Performance Plugin for Lampa
  * ============================================================
  */
 
 (function () {
     'use strict';
 
-    if (window.__LG_OPT_V14__) return;
-    window.__LG_OPT_V14__ = true;
+    if (window.__LG_OPT_V141__) return;
+    window.__LG_OPT_V141__ = true;
 
-    var VERSION       = '1.4.0';
+    var VERSION       = '1.4.1';
     var COMPONENT_ID  = 'lg_optimizer';
 
     var LS_DEBOUNCE      = 400;
     var LS_FAST          = 150;
-    var LS_SLOW          = 2000;
     var PLAYER_MS        = 250;
     var IMG_MARGIN       = '400px';
     var FETCH_TIMEOUT    = 15000;
-    var FILTER_DEBOUNCE  = 300;   // ← переименовано: SEARCH → FILTER
+    var FILTER_DEBOUNCE  = 300;
     var FASTNAV_GAP      = 150;
     var FASTNAV_RESTORE  = 200;
-    var TEMPLATE_MAX     = 40;
 
     var KEYS = {
         css:      'lg_opt_css',
@@ -36,8 +34,7 @@
         scroll:   'lg_opt_scroll',
         passive:  'lg_opt_passive',
         dns:      'lg_opt_dns',
-        template: 'lg_opt_template',
-        filter:   'lg_opt_filter',    // ← переименовано: search → filter
+        filter:   'lg_opt_filter',
         fastnav:  'lg_opt_fastnav'
     };
 
@@ -660,71 +657,9 @@
         }
     }
 
-    // ── МОДУЛЬ 11: Lampa.Template CLONENODE КЭШ [webOS 3+] ──
-    function patchTemplate() {
-        if (!isEnabled(KEYS.template)) {  // ← ИСПРАВЛЕНО
-            log('Template cache: disabled by user');
-            return;
-        }
-
-        var attempts = 0;
-        function tryPatch() {
-            try {
-                var T = safeGet('Lampa.Template');
-                if (!T || typeof T.get !== 'function') {
-                    if (++attempts < 25) setTimeout(tryPatch, 400);
-                    return;
-                }
-                if (T.__lgTemplateCache) return;
-                T.__lgTemplateCache = true;
-
-                var _get = T.get.bind(T);
-
-                var cache    = Object.create(null);
-                var lruOrder = [];
-
-                if (typeof T.add === 'function') {
-                    var _add = T.add.bind(T);
-                    T.add = function (name, html) {
-                        if (cache[name]) {
-                            delete cache[name];
-                            var idx = lruOrder.indexOf(name);
-                            if (idx !== -1) lruOrder.splice(idx, 1);
-                        }
-                        return _add(name, html);
-                    };
-                }
-
-                T.get = function (name) {
-                    if (cache[name]) {
-                        return cache[name].cloneNode(true);
-                    }
-
-                    var result = _get(name);
-
-                    if (result && result.nodeType === 1) {
-                        if (lruOrder.length >= TEMPLATE_MAX) {
-                            var oldest = lruOrder.shift();
-                            delete cache[oldest];
-                        }
-                        cache[name]    = result.cloneNode(true);
-                        lruOrder.push(name);
-                    }
-
-                    return result;
-                };
-
-                log('Template cache applied (max ' + TEMPLATE_MAX + ')');
-            } catch (e) {
-                log('Template cache error: ' + e.message);
-            }
-        }
-        setTimeout(tryPatch, 400);
-    }
-
     // ── МОДУЛЬ 12: FILTER DEBOUNCE [webOS 3+] ───────────────
     function patchFilter() {
-        if (!isEnabled(KEYS.filter)) {  // ← ИСПРАВЛЕНО
+        if (!isEnabled(KEYS.filter)) {
             log('Filter debounce: disabled by user');
             return;
         }
@@ -745,7 +680,6 @@
                 var lastEv = null;
 
                 L.send = function (name, data) {
-                    // ← ИСПРАВЛЕНО: 'filter' вместо 'search'
                     if (name !== 'filter') return _send(name, data);
 
                     lastEv = data;
@@ -908,7 +842,7 @@
                         uk: 'Ліниве завантаження постерів'
                     },
                     lg_opt_images_desc: {
-                        ru: 'Загружает постеры только при приближении к зоне видимости ±400 пикс. Освобождает 6 HTTP-соединений. [webOS 5+]',
+                        ru: 'Загружает постеры только при приближении к зоне видимості ±400 пикс. Освобождает 6 HTTP-соединений. [webOS 5+]',
                         en: 'Loads posters only within ±400 px of the viewport. Frees up 6 HTTP connections. [webOS 5+]',
                         uk: 'Завантажує постери лише поблизу зони видимості ±400 пкс. [webOS 5+]'
                     },
@@ -979,23 +913,12 @@
                         uk: 'Заздалегідь резолвить DNS і встановлює TLS-з\'єднання. Перша картка відкривається на ~600 мс швидше. [webOS 3+]'
                     },
 
-                    lg_opt_template_name: {
-                        ru: 'Кэш шаблонов интерфейса',
-                        en: 'UI template cache',
-                        uk: 'Кеш шаблонів інтерфейсу'
-                    },
-                    lg_opt_template_desc: {
-                        ru: 'Кэширует разобранные HTML-шаблоны карточек и отдаёт быстрый cloneNode вместо повторного HTML-парсинга. Каталог из 500 карточек рендерится в 20 раз быстрее. [webOS 3+]',
-                        en: 'Caches parsed HTML card templates and returns fast cloneNode instead of re-parsing HTML. A 500-card catalog renders 20× faster. [webOS 3+]',
-                        uk: 'Кешує розібрані HTML-шаблони. Каталог із 500 карток рендериться у 20 разів швидше. [webOS 3+]'
-                    },
-
-                    lg_opt_filter_name: {  // ← переименовано
+                    lg_opt_filter_name: {
                         ru: 'Дебаунс фильтрации',
                         en: 'Filter debounce',
                         uk: 'Дебаунс фільтрації'
                     },
-                    lg_opt_filter_desc: {  // ← переименовано
+                    lg_opt_filter_desc: {
                         ru: 'Откладывает применение фильтра на 300 мс после последнего изменения. Вместо 13 пересчётов на слово — всего 1. [webOS 3+]',
                         en: 'Delays filter application by 300 ms after the last change. One recalculation per word instead of 13. [webOS 3+]',
                         uk: 'Затримує застосування фільтра на 300 мс. Замість 13 перерахунків на слово — лише 1. [webOS 3+]'
@@ -1038,8 +961,7 @@
                 buildParam(KEYS.json,     'lg_opt_json_name',     'lg_opt_json_desc',     true),
                 buildParam(KEYS.eventbus, 'lg_opt_eventbus_name', 'lg_opt_eventbus_desc', true),
                 buildParam(KEYS.dns,      'lg_opt_dns_name',      'lg_opt_dns_desc',      true),
-                buildParam(KEYS.template, 'lg_opt_template_name', 'lg_opt_template_desc', true),
-                buildParam(KEYS.filter,   'lg_opt_filter_name',   'lg_opt_filter_desc',   true),  // ← исправлено
+                buildParam(KEYS.filter,   'lg_opt_filter_name',   'lg_opt_filter_desc',   true),
                 buildParam(KEYS.fastnav,  'lg_opt_fastnav_name',  'lg_opt_fastnav_desc',  true)
             ];
 
@@ -1081,9 +1003,8 @@
     // ── ТОЧКА ВХОДА ──────────────────────────────────────────
     function init() {
         try {
-            // КРИТИЧНО: порядок вызовов имеет значение!
             patchCSS();
-            patchFastNav();        // ← ИСПРАВЛЕНО: ДО patchEventListeners
+            patchFastNav();
             patchEventListeners();
             patchFetch();
             patchDNS();
@@ -1101,8 +1022,7 @@
             patchLocalStorage();
             patchRequestGuard();
             patchEventBus();
-            patchTemplate();       // ← теперь использует isEnabled()
-            patchFilter();         // ← переименовано, использует isEnabled()
+            patchFilter();
             registerPlugin();
 
             log('LG Optimizer ' + VERSION + ' — all modules started');
